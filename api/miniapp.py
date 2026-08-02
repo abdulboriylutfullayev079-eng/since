@@ -7,6 +7,8 @@ import urllib.parse
 import hmac
 import hashlib
 import asyncio
+import aiohttp
+import aiogram
 from http.server import BaseHTTPRequestHandler
 from bot.config import BOT_TOKEN
 from bot.db import db
