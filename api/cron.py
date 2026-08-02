@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 from http.server import BaseHTTPRequestHandler
 from aiogram import Bot
 from bot.config import BOT_TOKEN, CRON_SECRET
@@ -10,10 +9,8 @@ __all__ = ["handler"]
 bot = Bot(token=BOT_TOKEN)
 
 async def run_cron_jobs():
-    current_utc_hour = datetime.datetime.now(datetime.timezone.utc).hour
-    
-    await send_countdown_notifications(bot, current_utc_hour)
-    await send_habit_notifications(bot, current_utc_hour)
+    await send_countdown_notifications(bot)
+    await send_habit_notifications(bot)
     await process_pending_broadcast(bot)
 
 class handler(BaseHTTPRequestHandler):
