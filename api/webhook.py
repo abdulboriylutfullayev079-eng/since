@@ -30,12 +30,14 @@ def get_dispatcher():
     return _dp
 
 async def process_update(update_data: dict):
-    global _bot
-    if _bot is None:
-        _bot = Bot(token=BOT_TOKEN)
-        
-    update = types.Update(**update_data)
-    await get_dispatcher().feed_update(_bot, update)
+    # In Vercel serverless, each request gets a new event loop with asyncio.run().
+    # We MUST create a new Bot instance per request so its aiohttp session attaches to the current loop.
+    bot = Bot(token=BOT_TOKEN)
+    try:
+        update = types.Update(**update_data)
+        await get_dispatcher().feed_update(bot, update)
+    finally:
+        await bot.session.close()
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
