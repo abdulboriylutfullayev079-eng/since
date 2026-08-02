@@ -15,21 +15,27 @@ from bot.handlers.admin import router as admin_router
 
 __all__ = ["handler"]
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+_bot = None
+_dp = None
 
-# Register middleware
-dp.update.outer_middleware(UserRegisterMiddleware())
-
-# Register routers
-dp.include_router(start_router)
-dp.include_router(premium_router)
-dp.include_router(payments_router)
-dp.include_router(admin_router)
+def get_dispatcher():
+    global _dp
+    if _dp is None:
+        _dp = Dispatcher()
+        _dp.update.outer_middleware(UserRegisterMiddleware())
+        _dp.include_router(start_router)
+        _dp.include_router(premium_router)
+        _dp.include_router(payments_router)
+        _dp.include_router(admin_router)
+    return _dp
 
 async def process_update(update_data: dict):
+    global _bot
+    if _bot is None:
+        _bot = Bot(token=BOT_TOKEN)
+        
     update = types.Update(**update_data)
-    await dp.feed_update(bot, update)
+    await get_dispatcher().feed_update(_bot, update)
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -44,7 +50,10 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"OK")
         except Exception as e:
-            print(f"Error in webhook: {e}")
+            import traceback
+            err_str = traceback.format_exc()
+            print(f"Error in webhook:\n{err_str}")
             self.send_response(500)
+            self.send_header('Content-type', 'text/plain')
             self.end_headers()
-            self.wfile.write(b"Internal Server Error")
+            self.wfile.write(err_str.encode('utf-8'))
