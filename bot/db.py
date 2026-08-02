@@ -1,4 +1,4 @@
-import httpx
+import aiohttp
 from typing import Dict, Any, List, Optional
 from .config import SUPABASE_URL, SUPABASE_KEY
 
@@ -13,14 +13,16 @@ class SupabaseClient:
         }
 
     async def _request(self, method: str, table: str, params: Optional[Dict[str, Any]] = None, json_data: Optional[Dict[str, Any]] = None) -> Any:
-        async with httpx.AsyncClient() as client:
-            url = f"{self.base_url}/{table}"
-            response = await client.request(method, url, headers=self.headers, params=params, json=json_data)
-            response.raise_for_status()
-            # GET requests or requests with Prefer: return=representation will return JSON
-            if response.content:
-                return response.json()
-            return None
+        url = f"{self.base_url}/{table}"
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            async with session.request(method, url, params=params, json=json_data) as response:
+                response.raise_for_status()
+                if response.content_length or response.chunked:
+                    try:
+                        return await response.json()
+                    except:
+                        pass
+                return None
 
     async def upsert_user(self, user_id: int, username: Optional[str] = None) -> None:
         data = {"user_id": user_id}
@@ -29,9 +31,10 @@ class SupabaseClient:
         params = {"on_conflict": "user_id"}
         # Prefer: resolution=merge-duplicates ensures update on conflict
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates,return=representation"}
-        async with httpx.AsyncClient() as client:
+        async with aiohttp.ClientSession(headers=headers) as session:
             url = f"{self.base_url}/users"
-            await client.post(url, headers=headers, params=params, json=data)
+            async with session.post(url, params=params, json=data) as response:
+                response.raise_for_status()
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         result = await self._request("GET", "users", params={"user_id": f"eq.{user_id}", "select": "*"})
@@ -95,9 +98,10 @@ class SupabaseClient:
         data = {"habit_id": habit_id, "date": date, "status": status}
         params = {"on_conflict": "habit_id,date"}
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates"}
-        async with httpx.AsyncClient() as client:
+        async with aiohttp.ClientSession(headers=headers) as session:
             url = f"{self.base_url}/habit_logs"
-            await client.post(url, headers=headers, params=params, json=data)
+            async with session.post(url, params=params, json=data) as response:
+                response.raise_for_status()
 
     async def get_habit_logs(self, habit_id: int, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         # PostgREST requires 'and' syntax for multiple conditions on the same column
