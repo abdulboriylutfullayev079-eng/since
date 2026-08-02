@@ -17,10 +17,12 @@ class SupabaseClient:
         async with aiohttp.ClientSession(headers=self.headers) as session:
             async with session.request(method, url, params=params, json=json_data) as response:
                 response.raise_for_status()
-                if response.content_length or response.chunked:
+                text = await response.text()
+                if text:
+                    import json
                     try:
-                        return await response.json()
-                    except:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
                         pass
                 return None
 
@@ -29,7 +31,6 @@ class SupabaseClient:
         if username:
             data["username"] = username
         params = {"on_conflict": "user_id"}
-        # Prefer: resolution=merge-duplicates ensures update on conflict
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates,return=representation"}
         async with aiohttp.ClientSession(headers=headers) as session:
             url = f"{self.base_url}/users"
@@ -47,9 +48,9 @@ class SupabaseClient:
         return await self._request("GET", "users", params={"status": "eq.active", "select": "*"})
 
     async def get_user_stats(self) -> Dict[str, int]:
-        # Perform aggregate queries, or just get all and count. Getting all might be large, but let's assume it's okay for now.
-        # Alternatively, perform HEAD requests with Prefer: count=exact, but we'll fetch and count to keep it simple.
         users = await self._request("GET", "users", params={"select": "status"})
+        if not users:
+            return {"active": 0, "muted": 0, "deleted": 0, "total": 0}
         active = sum(1 for u in users if u.get("status") == "active")
         muted = sum(1 for u in users if u.get("status") == "muted")
         deleted = sum(1 for u in users if u.get("status") == "deleted")
@@ -77,7 +78,7 @@ class SupabaseClient:
 
     async def count_countdowns(self, user_id: int) -> int:
         res = await self._request("GET", "countdowns", params={"user_id": f"eq.{user_id}", "select": "id"})
-        return len(res)
+        return len(res) if res else 0
 
     async def create_habit(self, user_id: int, title: str) -> Dict[str, Any]:
         data = {"user_id": user_id, "title": title}
@@ -92,7 +93,7 @@ class SupabaseClient:
 
     async def count_habits(self, user_id: int) -> int:
         res = await self._request("GET", "habits", params={"user_id": f"eq.{user_id}", "select": "id"})
-        return len(res)
+        return len(res) if res else 0
 
     async def log_habit(self, habit_id: int, date: str, status: str) -> None:
         data = {"habit_id": habit_id, "date": date, "status": status}
@@ -104,7 +105,6 @@ class SupabaseClient:
                 response.raise_for_status()
 
     async def get_habit_logs(self, habit_id: int, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-        # PostgREST requires 'and' syntax for multiple conditions on the same column
         params = {
             "habit_id": f"eq.{habit_id}",
             "and": f"(date.gte.{start_date},date.lte.{end_date})",
@@ -121,8 +121,6 @@ class SupabaseClient:
         return await self._request("GET", "users", params={"select": "user_id,username,total_donated", "order": "total_donated.desc", "limit": limit})
 
     async def get_users_for_countdown_notification(self, current_utc_hour: int) -> List[Dict[str, Any]]:
-        """Fetch countdowns joined with user data, filtering active users.
-        Timezone offset is handled in the notification logic."""
         params = {
             "select": "*,users!inner(user_id,username,status,timezone)",
             "users.status": "eq.active"
@@ -131,7 +129,6 @@ class SupabaseClient:
         return res if res else []
 
     async def get_users_for_habit_notification(self, current_utc_hour: int) -> List[Dict[str, Any]]:
-        """Get active users with their habits for notification checks."""
         params = {
             "status": "eq.active",
             "select": "user_id,username,timezone,habits(id,title,created_at)"
@@ -140,7 +137,7 @@ class SupabaseClient:
 
     async def get_pending_broadcast(self) -> Optional[Dict[str, Any]]:
         res = await self._request("GET", "broadcasts", params={"status": "in.('pending','in_progress')", "select": "*", "limit": 1})
-        return res[0] if res else None
+        return res[0] if res and isinstance(res, list) else None
 
     async def create_broadcast(self, admin_chat_id: int, message_chat_id: int, message_id: int, total_users: int) -> Dict[str, Any]:
         data = {
@@ -151,7 +148,7 @@ class SupabaseClient:
             "status": "pending"
         }
         res = await self._request("POST", "broadcasts", json_data=data)
-        return res[0] if res else {}
+        return res[0] if res and isinstance(res, list) else {}
 
     async def update_broadcast_progress(self, broadcast_id: int, sent: int, failed: int, offset_count: int, status: str = "in_progress") -> None:
         data = {
