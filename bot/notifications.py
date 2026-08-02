@@ -6,41 +6,14 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, Teleg
 from .db import db
 
 
-def parse_timezone_offset(tz_str: str) -> int:
-    """Parse timezone string like 'UTC', 'UTC+5', 'UTC-3', 'UTC+5:30' into integer hour offset."""
-    if not tz_str or tz_str == "UTC":
-        return 0
-    match = re.match(r"UTC([+-])(\d{1,2})(?::(\d{2}))?", tz_str)
-    if match:
-        sign = 1 if match.group(1) == "+" else -1
-        hours = int(match.group(2))
-        return sign * hours
-    return 0
-
-
-def get_user_local_hour(current_utc_hour: int, tz_str: str) -> int:
-    """Get user's local hour given current UTC hour and their timezone."""
-    offset = parse_timezone_offset(tz_str)
-    local_hour = (current_utc_hour + offset) % 24
-    return local_hour
-
-
-async def send_countdown_notifications(bot: Bot, current_utc_hour: int):
-    """Send countdown notifications to users whose notify_hour matches their local time."""
-    countdowns = await db.get_users_for_countdown_notification(current_utc_hour)
+async def send_countdown_notifications(bot: Bot):
+    """Send countdown notifications to ALL active users with countdowns.
+    Called once daily by Vercel cron (Hobby plan limitation)."""
+    countdowns = await db.get_users_for_countdown_notification(0)
     today = datetime.date.today()
 
     for c in countdowns:
         try:
-            user_data = c.get("users", {})
-            user_tz = user_data.get("timezone", "UTC")
-            user_local_hour = get_user_local_hour(current_utc_hour, user_tz)
-            notify_hour = c.get("notify_hour", 9)
-
-            # Only notify if user's local hour matches the configured notify_hour
-            if user_local_hour != notify_hour:
-                continue
-
             target_date = datetime.date.fromisoformat(c["target_date"])
             created_at_str = c["created_at"]
             if "T" in created_at_str:
@@ -54,6 +27,7 @@ async def send_countdown_notifications(bot: Bot, current_utc_hour: int):
             days_since_creation = (today - created_at).days
             frequency = c.get("frequency", 1)
 
+            # Check if today is a notification day based on frequency
             if frequency > 0 and days_since_creation >= 0 and days_since_creation % frequency == 0:
                 if days_remaining > 0:
                     text = f"⏳ {c['title']}\n{days_remaining} дней осталось"
@@ -68,16 +42,24 @@ async def send_countdown_notifications(bot: Bot, current_utc_hour: int):
                     await db.update_user(c["user_id"], status="deleted")
                 except TelegramRetryAfter as e:
                     await asyncio.sleep(e.retry_after)
-                    await bot.send_message(c["user_id"], text)
+                    try:
+                        await bot.send_message(c["user_id"], text)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Small delay to avoid rate limits
+            await asyncio.sleep(0.05)
 
         except Exception as e:
             print(f"Failed to notify countdown {c.get('id')}: {e}")
 
 
-async def send_habit_notifications(bot: Bot, current_utc_hour: int):
-    """Send habit reminders to users who haven't logged today/yesterday.
-    Sends at 20:00 local time (evening reminder)."""
-    users = await db.get_users_for_habit_notification(current_utc_hour)
+async def send_habit_notifications(bot: Bot):
+    """Send habit reminders to ALL active users who haven't logged today/yesterday.
+    Called once daily by Vercel cron."""
+    users = await db.get_users_for_habit_notification(0)
     today = datetime.date.today()
     today_str = today.isoformat()
     yesterday_str = (today - datetime.timedelta(days=1)).isoformat()
@@ -85,13 +67,6 @@ async def send_habit_notifications(bot: Bot, current_utc_hour: int):
     for user in users:
         habits = user.get("habits", [])
         if not habits:
-            continue
-
-        user_tz = user.get("timezone", "UTC")
-        user_local_hour = get_user_local_hour(current_utc_hour, user_tz)
-
-        # Send habit reminders at 20:00 user's local time
-        if user_local_hour != 20:
             continue
 
         for habit in habits:
@@ -111,10 +86,17 @@ async def send_habit_notifications(bot: Bot, current_utc_hour: int):
                         await bot.send_message(user["user_id"], text)
                     except TelegramForbiddenError:
                         await db.update_user(user["user_id"], status="deleted")
-                        break  # Don't try more habits for deleted user
+                        break
                     except TelegramRetryAfter as e:
                         await asyncio.sleep(e.retry_after)
-                        await bot.send_message(user["user_id"], text)
+                        try:
+                            await bot.send_message(user["user_id"], text)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(0.05)
 
             except Exception as e:
                 print(f"Failed to notify habit {habit.get('id')}: {e}")
@@ -177,14 +159,13 @@ async def process_pending_broadcast(bot: Bot):
 
         offset += len(batch)
 
-        # Check Vercel time limit (~8 seconds to be safe)
         elapsed = asyncio.get_event_loop().time() - start_time
         if elapsed > 8.0:
             await db.update_broadcast_progress(broadcast_id, sent, failed, offset, status="in_progress")
             try:
                 await bot.send_message(
                     broadcast["admin_chat_id"],
-                    f"⏳ Рассылка в процессе...\nОтправлено: {sent}/{broadcast['total_users']}\nОшибок: {failed}\nПродолжение через cron..."
+                    f"⏳ Рассылка в процессе...\nОтправлено: {sent}/{broadcast['total_users']}\nОшибок: {failed}\nПродолжение при следующем cron..."
                 )
             except Exception:
                 pass
